@@ -198,3 +198,203 @@ KEYEVENTF_KEYUP = 0x0002
 
 def _user32():
     if platform.system() != "Windows":
+        raise RuntimeError("Windows hotkey support requires Windows")
+    return ctypes.windll.user32
+
+
+def send_hotkey(keys):
+    user32 = _user32()
+    try:
+        codes = [VK[key] for key in keys]
+    except KeyError as error:
+        raise ValueError(f"Unknown key mapping: {error}") from error
+
+    for code in codes:
+        user32.keybd_event(code, 0, 0, 0)
+        time.sleep(0.015)
+    time.sleep(0.04)
+    for code in reversed(codes):
+        user32.keybd_event(code, 0, KEYEVENTF_KEYUP, 0)
+        time.sleep(0.015)
+
+
+def is_key_down(key_name):
+    return bool(_user32().GetAsyncKeyState(VK[key_name]) & 0x8000)
+
+
+# ============================================================
+# 06. Tiny2 Global Hotkey backend
+# ============================================================
+def hotkey_command(command):
+    keys = CONFIG["hotkeys"].get(command)
+    if not keys:
+        raise ValueError(f"No Tiny2 hotkey mapping: {command}")
+    send_hotkey(keys)
+
+
+# ============================================================
+# 07. Tiny2 OSC backend (experimental / retained from v0.4.3)
+# ============================================================
+def osc_string(value):
+    data = value.encode("utf-8") + b"\x00"
+    return data + (b"\x00" * ((4 - len(data) % 4) % 4))
+
+
+def osc_packet(address, args):
+    tags = "," + ("i" * len(args))
+    packet = osc_string(address) + osc_string(tags)
+    for value in args:
+        packet += struct.pack(">i", int(value))
+    return packet
+
+
+def osc_send(address, values):
+    cfg = CONFIG["osc"]
+    args = list(values)
+    if cfg.get("include_device_index", True):
+        args.insert(0, int(cfg.get("device_index", 0)))
+    packet = osc_packet(address, args)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(packet, (cfg.get("host", "127.0.0.1"), int(cfg.get("port", 16284))))
+    finally:
+        sock.close()
+
+
+osc_zoom = int(CONFIG["osc"].get("zoom_start", 0))
+
+
+def osc_move(direction):
+    path = {
+        "left": "/OBSBOT/WebCam/General/SetGimbalLeft",
+        "right": "/OBSBOT/WebCam/General/SetGimbalRight",
+        "up": "/OBSBOT/WebCam/General/SetGimbalUp",
+        "down": "/OBSBOT/WebCam/General/SetGimbalDown",
+    }[direction]
+    speed = max(1, min(100, int(CONFIG["osc"].get("move_speed", 35))))
+    move_ms = max(20, min(1000, int(CONFIG["osc"].get("move_ms", 120))))
+    osc_send(path, [speed])
+    time.sleep(move_ms / 1000.0)
+    osc_send(path, [0])
+
+
+def osc_zoom_command(command):
+    global osc_zoom
+    step = max(1, min(50, int(CONFIG["osc"].get("zoom_step", 10))))
+    if command == "zoom_in":
+        osc_zoom = min(100, osc_zoom + step)
+    else:
+        osc_zoom = max(0, osc_zoom - step)
+    osc_send("/OBSBOT/WebCam/General/SetZoom", [osc_zoom])
+
+
+def execute_tiny2_command(command, dry_run=False):
+    backend = str(CONFIG.get("backend", "hotkey")).lower()
+    if dry_run:
+        print(f"[DRY RUN] Tiny2 {backend}: {command}")
+        return backend
+
+    if backend == "hotkey":
+        hotkey_command(command)
+    elif backend == "osc":
+        if command in {"left", "right", "up", "down"}:
+            osc_move(command)
+        elif command in {"zoom_in", "zoom_out"}:
+            osc_zoom_command(command)
+        else:
+            raise ValueError("Unsupported OSC command")
+    else:
+        raise ValueError(f"Unknown backend: {backend}")
+    return backend
+
+
+# ============================================================
+# 08. OBS scene hotkeys / control state mapping
+#     Scene 1 = Tiny3 / control OFF
+#     Scene 2 = Tiny2 / control OFF
+#     Scene 3 = MEET  / control OFF
+#     Scene 4 = Tiny2 + control guide / control ON
+# ============================================================
+def send_obs_scene_key(scene_key, source="scene", dry_run=False):
+    keys = CONFIG.get("obs_scene_hotkeys", {}).get(f"scene_{scene_key}")
+    if not keys:
+        log_event(source, f"SCENE_{scene_key}", "obs-hotkey", "ERROR", "scene hotkey missing")
+        return False
+
+    if dry_run:
+        print(f"[DRY RUN] OBS SCENE_{scene_key}: {keys}")
+        return True
+
+    try:
+        send_hotkey(keys)
+        log_event(source, f"SCENE_{scene_key}", "obs-hotkey", "OK", "+".join(keys))
+        print(f"[OBS] SCENE_{scene_key} via {'+'.join(keys)}")
+        return True
+    except Exception as error:
+        log_event(source, f"SCENE_{scene_key}", "obs-hotkey", "ERROR", repr(error))
+        print("[OBS ERROR]", error)
+        return False
+
+
+# ============================================================
+# 09. OBS controller-style display window (Meiryo / exact lowercase commands)
+# ============================================================
+class ObsPanel:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.option_add("*Font", ("Meiryo", 10))
+        self.root.withdraw()
+        self.window = None
+
+    def _button_box(self, parent, text, row, column, accent="#35c9ff", width=7):
+        box = tk.Label(
+            parent,
+            text=text,
+            fg=accent,
+            bg="#151821",
+            font=("Meiryo", 24, "bold"),
+            width=width,
+            height=2,
+            relief="ridge",
+            bd=3,
+        )
+        box.grid(row=row, column=column, padx=7, pady=7, sticky="nsew")
+        return box
+
+    def show(self):
+        if self.window is not None and self.window.winfo_exists():
+            self.window.deiconify()
+            self.window.lift()
+            return
+
+        self.window = tk.Toplevel(self.root)
+        self.window.title("Tiny2 Camera Control - OBS")
+        self.window.configure(bg="#080a10")
+        self.window.resizable(False, False)
+
+        outer = tk.Frame(self.window, bg="#080a10", padx=22, pady=18)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(
+            outer,
+            text="TINY2 CAMERA CONTROL",
+            fg="white",
+            bg="#080a10",
+            font=("Meiryo", 28, "bold"),
+        ).pack()
+        tk.Label(
+            outer,
+            text="ユーザーTiny2コントロール中",
+            fg="#ff70e8",
+            bg="#080a10",
+            font=("Meiryo", 15, "bold"),
+            pady=3,
+        ).pack()
+        tk.Label(
+            outer,
+            text="チャットで下のコマンドを送信",
+            fg="#e9e9ef",
+            bg="#080a10",
+            font=("Meiryo", 13, "bold"),
+            pady=3,
+        ).pack()
