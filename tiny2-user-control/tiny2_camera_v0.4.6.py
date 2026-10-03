@@ -398,3 +398,203 @@ class ObsPanel:
             font=("Meiryo", 13, "bold"),
             pady=3,
         ).pack()
+
+        controller = tk.Frame(
+            outer,
+            bg="#10131b",
+            highlightbackground="#d94cff",
+            highlightthickness=3,
+            padx=18,
+            pady=14,
+        )
+        controller.pack(pady=(12, 6))
+
+        move = tk.Frame(controller, bg="#10131b")
+        move.grid(row=0, column=0, padx=(0, 24))
+        zoom = tk.Frame(controller, bg="#10131b")
+        zoom.grid(row=0, column=1, padx=(24, 0))
+
+        self._button_box(move, "c↑", 0, 1)
+        self._button_box(move, "c←", 1, 0)
+        self._button_box(move, "●", 1, 1, accent="#777b86", width=7)
+        self._button_box(move, "c→", 1, 2)
+        self._button_box(move, "c↓", 2, 1)
+
+        self._button_box(zoom, "c+", 0, 0, accent="#65ea8b", width=8)
+        self._button_box(zoom, "c-", 2, 0, accent="#65ea8b", width=8)
+
+        tk.Label(
+            outer,
+            text="※ この表示が出るシーン4でユーザーコントロールを使用します",
+            fg="#c9ccd6",
+            bg="#080a10",
+            font=("Meiryo", 11, "bold"),
+            pady=5,
+        ).pack()
+
+        # Xで閉じた場合も安全側へ倒す。
+        # 操作受付をOFFにして窓を隠し、OBSをScene 1へ戻す。
+        self.window.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: emergency_stop(source="controller-window-close"),
+        )
+
+    def hide(self):
+        if self.window is not None and self.window.winfo_exists():
+            self.window.withdraw()
+
+    def run(self):
+        self.root.mainloop()
+
+
+# ============================================================
+# 10. Control state / manual scene-key synchronization
+# ============================================================
+def current_status():
+    with state_lock:
+        return {
+            "version": VERSION,
+            "enabled": server_enabled,
+            "backend": CONFIG.get("backend", "hotkey"),
+            "host": HOST,
+            "port": PORT,
+            "commands": COMMAND_LABELS,
+            "last_scene_key": last_scene_key,
+            "last_state_source": last_state_source,
+            "scene_map": {
+                "1": "Tiny3 / control OFF",
+                "2": "Tiny2 / control OFF",
+                "3": "MEET / control OFF",
+                "4": "Tiny2 + guide / control ON",
+            },
+        }
+
+
+def apply_control_state(value, source="state", scene_key=None):
+    global server_enabled, last_scene_key, last_state_source
+    value = bool(value)
+
+    with state_lock:
+        changed = server_enabled != value
+        server_enabled = value
+        if scene_key in SCENE_CONTROL_STATE:
+            last_scene_key = scene_key
+        last_state_source = source
+
+    if panel is not None:
+        panel.root.after(0, panel.show if value else panel.hide)
+
+    detail = f"scene_key={scene_key or ''} changed={changed}"
+    log_event(source, "ON" if value else "OFF", CONFIG.get("backend", "hotkey"), "OK", detail)
+    print("[Tiny2]", "ON" if value else "OFF", f"source={source}", f"scene={scene_key}")
+    return value
+
+
+def set_enabled(value, source="state", switch_scene=True):
+    """UI/API state change.
+
+    Permission changes first. Then, when requested, the OBS scene hotkey is sent:
+    ON -> Scene 4, OFF -> Scene 1.
+    """
+    value = apply_control_state(bool(value), source=source)
+
+    if switch_scene:
+        target_scene = "4" if value else "1"
+        send_obs_scene_key(target_scene, source=source)
+    return current_status()
+
+
+def emergency_stop(source="emergency"):
+    apply_control_state(False, source=source)
+    send_obs_scene_key("1", source=source)
+    log_event(source, "EMERGENCY_STOP", CONFIG.get("backend", "hotkey"), "OK")
+    print("[Tiny2] EMERGENCY STOP COMPLETE / explicit ON or top-row 4 can restart")
+    return current_status()
+
+
+def handle_scene_key(scene_key, source="top-row-key"):
+    if scene_key not in SCENE_CONTROL_STATE:
+        return
+    apply_control_state(SCENE_CONTROL_STATE[scene_key], source=source, scene_key=scene_key)
+
+
+def scene_key_watcher():
+    if platform.system() != "Windows":
+        return
+
+    previous = {key: False for key in SCENE_CONTROL_STATE}
+    delay = max(10, min(200, int(CONFIG.get("scene_key_poll_ms", 25)))) / 1000.0
+
+    while True:
+        try:
+            for key in ("1", "2", "3", "4"):
+                down = is_key_down(key)
+                if down and not previous[key]:
+                    handle_scene_key(key, source=f"top-row-{key}")
+                previous[key] = down
+        except Exception as error:
+            log_event("scene-key-watcher", "WATCH", "keyboard", "ERROR", repr(error))
+            time.sleep(0.5)
+        time.sleep(delay)
+
+
+# ============================================================
+# 11. Local browser test page
+# ============================================================
+TEST_HTML = r'''<!doctype html><html lang="ja"><meta charset="utf-8">
+<title>Streamforge Tiny2 Test</title>
+<style>body{font-family:Meiryo,'メイリオ',sans-serif;background:#111;color:#eee;max-width:820px;margin:30px auto;padding:0 16px}button{font-family:Meiryo,'メイリオ',sans-serif;font-size:19px;margin:5px;padding:10px 15px;border-radius:10px;border:1px solid #777;background:#222;color:#fff}.on{border-color:#42e66f}.danger{background:#b71c1c;border:2px solid #fff}pre{background:#1b1b1b;padding:12px;border-radius:10px;white-space:pre-wrap}.row{text-align:center}.small{font-size:13px;color:#bbb}</style>
+<h1>Tiny2 Camera Control TEST v0.4.6</h1>
+<p>Scene 1=Tiny3/OFF、2=Tiny2/OFF、3=MEET/OFF、4=Tiny2+Guide/ON。</p>
+<div class="row"><button id="toggle" onclick="toggle()">Tiny2 OFF</button><button class="danger" onclick="emergency()">■ 強制停止</button></div>
+<div class="row"><button onclick="scene(1)">Scene 1</button><button onclick="scene(2)">Scene 2</button><button onclick="scene(3)">Scene 3</button><button onclick="scene(4)">Scene 4</button></div>
+<div class="row"><button onclick="cmd('up')">↑</button></div>
+<div class="row"><button onclick="cmd('left')">←</button><button onclick="cmd('down')">↓</button><button onclick="cmd('right')">→</button></div>
+<div class="row"><button onclick="cmd('zoom_in')">＋</button><button onclick="cmd('zoom_out')">－</button></div>
+<pre id="out">status...</pre><p class="small">上段1/2/3/4を手で押した時もWindows側が状態を追従します。テンキーは対象外。</p>
+<script>
+const token='__TOKEN__'; let enabled=false; const out=document.getElementById('out');
+async function req(path){try{const r=await fetch(path); const t=await r.text(); out.textContent=`${r.status} ${t}`; try{const j=JSON.parse(t); if(typeof j.enabled==='boolean')enabled=j.enabled}catch(_){} render(); return r.ok}catch(e){out.textContent=String(e);return false}}
+function render(){const b=document.getElementById('toggle'); b.textContent=enabled?'Tiny2 ON':'Tiny2 OFF'; b.className=enabled?'on':''}
+function toggle(){req(`/state?enabled=${enabled?0:1}&switch_scene=1&source=test-panel&token=${token}`)}
+function emergency(){req(`/emergency?source=test-panel&token=${token}`)}
+function scene(n){req(`/scene?key=${n}&source=test-panel&token=${token}`)}
+function cmd(c){req(`/cmd?name=${encodeURIComponent(c)}&source=test-panel&token=${token}`)}
+setInterval(()=>req('/status?token='+token),700); req('/status?token='+token);
+</script></html>'''.replace("__TOKEN__", AUTH_TOKEN)
+
+
+# ============================================================
+# 12. Localhost HTTP API
+# ============================================================
+class Handler(BaseHTTPRequestHandler):
+    def send_text(self, code, text, content_type="text/plain; charset=utf-8"):
+        data = text.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_json(self, code, payload):
+        self.send_text(code, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+
+    def params(self, parsed):
+        return parse_qs(parsed.query)
+
+    def authed(self, params):
+        return params.get("token", [""])[0] == AUTH_TOKEN
+
+    def do_GET(self):
+        global last_command_time
+        parsed = urlparse(self.path)
+        params = self.params(parsed)
+
+        if parsed.path == "/":
+            self.send_text(200, f"Tiny2 Camera Controller {VERSION} READY\nOpen /test")
+            return
+
+        if parsed.path == "/test":
+            self.send_text(200, TEST_HTML, "text/html; charset=utf-8")
