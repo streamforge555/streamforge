@@ -598,3 +598,165 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/test":
             self.send_text(200, TEST_HTML, "text/html; charset=utf-8")
+            return
+
+        if parsed.path == "/status":
+            if not self.authed(params):
+                self.send_text(403, "FORBIDDEN")
+                return
+            self.send_json(200, current_status())
+            return
+
+        if parsed.path == "/state":
+            if not self.authed(params):
+                self.send_text(403, "FORBIDDEN")
+                return
+            value = params.get("enabled", ["0"])[0] == "1"
+            switch_scene = params.get("switch_scene", ["1"])[0] != "0"
+            source = params.get("source", ["unknown"])[0][:80]
+            self.send_json(200, set_enabled(value, source=source, switch_scene=switch_scene))
+            return
+
+        if parsed.path == "/emergency":
+            if not self.authed(params):
+                self.send_text(403, "FORBIDDEN")
+                return
+            source = params.get("source", ["unknown"])[0][:80]
+            self.send_json(200, emergency_stop(source=source))
+            return
+
+        if parsed.path == "/scene":
+            if not self.authed(params):
+                self.send_text(403, "FORBIDDEN")
+                return
+            scene_key = params.get("key", [""])[0]
+            source = params.get("source", ["unknown"])[0][:80]
+            if scene_key not in SCENE_CONTROL_STATE:
+                self.send_text(400, "BAD SCENE KEY")
+                return
+            # Permission state is applied immediately; OBS receives the same top-row key.
+            handle_scene_key(scene_key, source=f"{source}-scene-{scene_key}")
+            send_obs_scene_key(scene_key, source=source)
+            self.send_json(200, current_status())
+            return
+
+        if parsed.path != "/cmd":
+            self.send_text(404, "NOT FOUND")
+            return
+
+        if not self.authed(params):
+            self.send_text(403, "FORBIDDEN")
+            return
+
+        command = params.get("name", [""])[0]
+        source = params.get("source", ["unknown"])[0][:80]
+        message_id = params.get("message_id", [""])[0][:80]
+        backend = str(CONFIG.get("backend", "hotkey"))
+
+        if command not in ALLOWED_COMMANDS:
+            log_event(source, command, backend, "BLOCK", "bad command")
+            self.send_text(400, "BAD COMMAND")
+            return
+
+        if not current_status()["enabled"]:
+            log_event(source, command, backend, "BLOCK", f"control OFF message_id={message_id}")
+            self.send_text(423, "TINY2 CONTROL OFF")
+            return
+
+        with command_lock:
+            now = time.monotonic()
+            cooldown = max(0, int(CONFIG.get("server_cooldown_ms", 700))) / 1000.0
+            if now - last_command_time < cooldown:
+                log_event(source, command, backend, "COOLDOWN", f"message_id={message_id}")
+                self.send_text(429, "COOLDOWN")
+                return
+
+            last_command_time = now
+            try:
+                used_backend = execute_tiny2_command(command)
+                log_event(source, command, used_backend, "OK", f"message_id={message_id}")
+                print(f"[Tiny2] {command} ({COMMAND_LABELS[command]}) via {used_backend}")
+                self.send_text(200, "OK")
+            except Exception as error:
+                log_event(source, command, backend, "ERROR", repr(error))
+                print("[ERROR]", error)
+                self.send_text(500, f"ERROR: {error}")
+
+    def log_message(self, format, *args):
+        return
+
+
+class LocalOnlyHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def run_server():
+    server = LocalOnlyHTTPServer((HOST, PORT), Handler)
+    print("========================================")
+    print(" Streamforge Tiny2 Camera Control TEST")
+    print("========================================")
+    print("Version :", VERSION)
+    print("Backend :", CONFIG.get("backend", "hotkey"))
+    print("HTTP    :", f"http://{HOST}:{PORT}/test")
+    print("State   : OFF (safe default)")
+    print("Scene 1 : Tiny3 / control OFF")
+    print("Scene 2 : Tiny2 / control OFF")
+    print("Scene 3 : MEET / control OFF")
+    print("Scene 4 : Tiny2 + guide / control ON")
+    print("Commands: c← c→ c↑ c↓ c+ c-")
+    print("Log     :", LOG_PATH)
+    print("========================================")
+    server.serve_forever()
+
+
+# ============================================================
+# 13. Self-test / entry point
+# ============================================================
+def dry_run_tests():
+    print("[SELFTEST] config:", json.dumps(CONFIG, ensure_ascii=False))
+    for command in sorted(ALLOWED_COMMANDS):
+        execute_tiny2_command(command, dry_run=True)
+
+    for scene_key in ("1", "2", "3", "4"):
+        send_obs_scene_key(scene_key, source="selftest", dry_run=True)
+
+    assert SCENE_CONTROL_STATE == {"1": False, "2": False, "3": False, "4": True}
+    assert CONFIG["obs_scene_hotkeys"]["scene_1"] == ["1"]
+    assert CONFIG["obs_scene_hotkeys"]["scene_2"] == ["2"]
+    assert CONFIG["obs_scene_hotkeys"]["scene_3"] == ["3"]
+    assert CONFIG["obs_scene_hotkeys"]["scene_4"] == ["4"]
+    assert VK["1"] == 0x31 and VK["2"] == 0x32 and VK["3"] == 0x33 and VK["4"] == 0x34
+
+    packet = osc_packet("/OBSBOT/WebCam/General/SetGimbalLeft", [0, 35])
+    assert len(packet) % 4 == 0
+    print("[SELFTEST] scene map / top-row keys OK")
+    print("[SELFTEST] OSC packet alignment OK")
+    print("[SELFTEST] PASS")
+
+
+def main():
+    global panel
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--selftest", action="store_true", help="No camera/OBS movement; static dry-run only")
+    args = parser.parse_args()
+
+    if args.selftest:
+        dry_run_tests()
+        return
+
+    if platform.system() != "Windows" and str(CONFIG.get("backend", "hotkey")).lower() == "hotkey":
+        print("[WARN] hotkey backend is for Windows. Use --selftest here.")
+
+    if not acquire_single_instance():
+        print("[INFO] Streamforge Tiny2 controller is already running. Second instance will exit.")
+        return
+
+    panel = ObsPanel()
+    threading.Thread(target=run_server, daemon=True).start()
+    threading.Thread(target=scene_key_watcher, daemon=True).start()
+    panel.run()
+
+
+if __name__ == "__main__":
+    main()
