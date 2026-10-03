@@ -39,3 +39,16 @@ https://streamforge.booth.pm/
 ## Feedback
 
 Bug reports and feature requests are welcome through GitHub Issues.
+
+---
+
+## Experiments
+
+### 🎥 Tiny2 Viewer Camera Control
+
+Experimental StripChat viewer camera control for **OBSBOT Tiny 2**.
+
+Authorized viewers can use strict public-chat commands to pan, tilt, and zoom the camera while the designated camera-control request is active.
+
+- [Source and setup](./tiny2-user-control/)
+- Related note: https://note.com/steamforge555/n/n798ffa1c2202
