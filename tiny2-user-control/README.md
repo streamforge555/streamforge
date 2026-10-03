@@ -64,12 +64,13 @@ StripChatのAPIからカメラを操作するものではありません。カ�
 
 ## 初回セットアップ
 
-1. `Streamforge_Tiny2_UserControl_v0.4.6_TEST.user.js` をTampermonkeyへ登録して有効化
-2. `setup_autostart_once.bat` を1回実行
-3. `http://127.0.0.1:8765/test` を開いて動作確認
-4. OBS Studio / OBSBOT Center / Streamforgeリク管理を起動
+1. このフォルダ内のファイルを同じフォルダへ保存
+2. `Streamforge_Tiny2_UserControl_v0.4.6_TEST.user.js` をTampermonkeyへ登録して有効化
+3. `start_tiny2_test.bat` を起動
+4. `http://127.0.0.1:8765/test` を開いて動作確認
+5. OBS Studio / OBSBOT Center / Streamforgeリク管理を起動
 
-セットアップ後はWindowsログイン時にcontrollerがバックグラウンド起動し、操作受付OFFで待機します。
+公開版は安全のため自動起動スクリプトを含めていません。配信前に `start_tiny2_test.bat` からcontrollerを起動してください。
 
 詳しいScene構成、ホットキー、実地テスト手順は `Streamforge_Tiny2_UserControl_v0.4.6_説明書.txt` を参照してください。
 
@@ -114,10 +115,9 @@ https://note.com/steamforge555/n/n798ffa1c2202
 - `Streamforge_Tiny2_UserControl_v0.4.6_TEST.user.js` — StripChat側Tampermonkey
 - `tiny2_camera_v0.4.6.py` — Windows側controller
 - `tiny2_config.json` — ホットキー等の設定
-- `setup_autostart_once.bat` / `setup_autostart.ps1` — 初回セットアップ
-- `start_tiny2_test.bat` — 手動起動確認用
-- `selftest.bat` — 簡易セルフテスト
-- `Streamforge_Tiny2_UserControl_v0.4.6_説明書.txt` — 詳細手順
+- `start_tiny2_test.bat` — Windows側controllerの手動起動
+- `selftest.bat` — カメラを動かさない簡易セルフテスト
+- `Streamforge_Tiny2_UserControl_v0.4.6_説明書.txt` — 基準版の詳細手順（自動起動部分は公開版では使用しません）
 
 ## 注意
 
