@@ -1,0 +1,31 @@
+{
+  "backend": "hotkey",
+  "server_cooldown_ms": 700,
+  "scene_key_poll_ms": 25,
+  "hotkeys": {
+    "left": ["CTRL", "ALT", "LEFT"],
+    "right": ["CTRL", "ALT", "RIGHT"],
+    "up": ["CTRL", "ALT", "UP"],
+    "down": ["CTRL", "ALT", "DOWN"],
+    "zoom_in": ["CTRL", "ALT", "I"],
+    "zoom_out": ["CTRL", "ALT", "O"]
+  },
+  "obs_scene_hotkeys": {
+    "scene_1": ["1"],
+    "scene_2": ["2"],
+    "scene_3": ["3"],
+    "scene_4": ["4"],
+    "control_on": ["4"],
+    "control_off": ["1"]
+  },
+  "osc": {
+    "host": "127.0.0.1",
+    "port": 16284,
+    "device_index": 0,
+    "include_device_index": true,
+    "move_speed": 35,
+    "move_ms": 120,
+    "zoom_start": 0,
+    "zoom_step": 10
+  }
+}
